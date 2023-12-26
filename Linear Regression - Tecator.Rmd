@@ -1,0 +1,189 @@
+---
+title: 'Exercise 3 '
+author: "Raegan Gutierrez"
+date: '2022-07-03'
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lattice)
+library(e1071)
+library(pls)
+library(elasticnet)
+library(AppliedPredictiveModeling)
+library(kernlab)
+library(corrplot)
+library(tidyverse)
+library(ggplot2)
+library(fda.usc)
+```
+
+
+```{r}
+library(caret)
+data(tecator)
+str(tecator)
+
+```
+
+
+## Part A
+
+```{r}
+prc = prcomp(absorp)
+vars = prc$sdev^2
+total = sum(vars)
+plot((vars/total)*100, xlim=c(0,40), type='b', pch=16, xlab='number of components', ylab='percent of total variation' )
+grid()
+```
+
+```{r}
+var_explained = prc$sdev^2 / sum(prc$sdev^2)
+print(var_explained)
+```
+
+With roughly 99% of the data being explained in the first factor, the effective dimension is 1. 
+
+## Part B
+
+```{r}
+set.seed(100)
+index <- createDataPartition(endpoints[, 3], p = 0.75, list= FALSE)
+
+Trainx <- absorp[ index,]
+Testx  <- absorp[-index,]
+Trainy <- endpoints[ index, 3]
+Testy  <- endpoints[-index,3]
+
+ctrl <- trainControl(method = "repeatedcv", repeats = 5)
+
+# Linear Regression
+
+linear <- train(x = data.frame(Trainx), y = Trainy,  preProcess = c("center", "scale"), method = "lm", trControl = ctrl)
+linear
+summary(linear)
+
+testResults <- data.frame(obs = Testy,
+              Linear_Regression = predict(linear,
+                                  data.frame(Testx)))
+
+```
+
+```{r}
+#PLS 
+set.seed(100)
+plsTune <- train(x = data.frame(Trainx), y = Trainy,
+                 method = "pls",
+                 preProcess = c("center", "scale"),
+                 tuneGrid = expand.grid(ncomp = 1:50),
+                 trControl = ctrl)
+plsTune
+plot(plsTune)
+testResults$PLS <- predict(plsTune, data.frame(Testx))
+
+#PCR
+set.seed(100)
+pcrTune <- train(x = data.frame(Trainx), y = Trainy,
+                 method = "pcr",
+                 preProcess = c("center", "scale"),
+                 tuneGrid = expand.grid(ncomp = 1:50),
+                 trControl = ctrl)
+pcrTune                  
+plot(pcrTune)
+
+plsResamples <- plsTune$results
+plsResamples$Model <- "PLS"
+pcrResamples <- pcrTune$results
+pcrResamples$Model <- "PCR"
+plsPlotData <- rbind(plsResamples, pcrResamples)
+
+xyplot(RMSE ~ ncomp,
+       data = plsPlotData,
+       #aspect = 1,
+       xlab = "# Components",
+       ylab = "RMSE (Cross-Validation)",
+       auto.key = list(columns = 2),
+       groups = Model,
+       type = c("o", "g"))
+plsImp <- varImp(plsTune, scale = FALSE)
+plot(plsImp, top = 25, scales = list(y = list(cex = .95)))
+
+pcrImp <- varImp(pcrTune, scale = FALSE)
+plot(pcrImp, top = 25, scales = list(y = list(cex = .95)))
+```
+
+```{r}
+#Ridge Grid
+ridgeGrid <- expand.grid(lambda = seq(0, .1, length = 10))
+set.seed(100)
+ridgeTune <- train(x = data.frame(Trainx), y = Trainy,
+                   method = "ridge",
+                   tuneGrid = ridgeGrid,
+                   trControl = ctrl,
+                   preProc = c("center", "scale"))
+ridgeTune
+summary(ridgeTune)
+testResults$Ridge <- predict(ridgeTune, data.frame(Testx))
+```
+
+```{r}
+#ENET
+enetGrid <- expand.grid(lambda = c(0, 0.01, .1), 
+                        fraction = seq(.05, 1, length = 20))
+set.seed(100)
+enetTune <- train(x = data.frame(Trainx), y = Trainy,
+                  method = "enet",
+                  tuneGrid = enetGrid,
+                  trControl = ctrl,
+                  preProc = c("center", "scale"))
+enetTune
+testResults$ENET <- predict(enetTune, data.frame(Testx))
+```
+
+```{r}
+#compare models 
+R2 <-RMSE<-MAE<- numeric(0)
+
+#Linear 
+testResults$LRM<- predict(linear, data.frame(Testx))
+R2[1] = cor(testResults$LRM, Testy)^2
+RMSE[1] = sqrt(mean((testResults$LRM - Testy)^2))
+MAE[1] = mean(abs(testResults$LRM - Testy))
+
+#PCR
+testResults$PCR <- predict(pcrTune, data.frame(Testx))
+R2[2] = cor(testResults$PCR, Testy)^2
+RMSE[2] = sqrt(mean((testResults$PCR - Testy)^2))
+MAE[2] = mean(abs(testResults$PCR - Testy))
+
+#PLS
+testResults$PLS <- predict(plsTune, data.frame(Testx))
+R2[3] = cor(testResults$PLS, Testy)^2
+RMSE[3] = sqrt(mean((testResults$PLS - Testy)^2))
+MAE[3] = mean(abs(testResults$PLS - Testy))
+
+#Ridge
+testResults$Ridge <- predict(ridgeTune, data.frame(Testx))
+R2[4] = cor(testResults$Ridge, Testy)^2
+RMSE[4] = sqrt(mean((testResults$Ridge - Testy)^2))
+MAE[4] = mean(abs(testResults$Ridge - Testy))
+
+#ENET
+testResults$ENET <- predict(enetTune, data.frame(Testx))
+R2[5] = cor(testResults$ENET, Testy)^2
+RMSE[5] = sqrt(mean((testResults$ENET - Testy)^2))
+MAE[5] = mean(abs(testResults$ENET - Testy))
+
+#Results
+results = cbind(R2, RMSE, MAE)
+row.names(results) = c("LRM", "PCR", "PLS", "Ridge", "ENET")
+results
+```
+
+
+## Part C
+
+The model with the best predictive ability is the PLS model. It has the highest R squared and the lowest RMSE and MAE. Ridge regression has a noticeably lower R squared than the other models, as well as the highest RMSE and MAE. I would say this is the worst performing model of the group. Out of the models, I would choose the PLS model to predict the percentage of moisture in the samples. The high R squared value means it can predict 93.62% of the variation in moisture. The low RMSE and MAE means the model can make these predictions with less error than the other models, making it the most accurate for predictions.
